@@ -174,11 +174,19 @@ endif
 java_version_str := $(shell unset _JAVA_OPTIONS && java -version 2>&1)
 javac_version_str := $(shell unset _JAVA_OPTIONS && javac -version 2>&1)
 
-# Check for the correct version of java
+# Check for the correct version of java, should be 1.7 by
+# default, and 1.8 if EXPERIMENTAL_USE_JAVA8 is set
+ifneq ($(EXPERIMENTAL_USE_JAVA8),)
+required_version := "1.8.x"
+required_javac_version := "1.8"
+java_version := $(shell echo '$(java_version_str)' | grep '[ "]1\.8[\. "$$]')
+javac_version := $(shell echo '$(javac_version_str)' | grep '[ "]1\.8[\. "$$]')
+else # default
 required_version := "1.7.x/1.8.x"
 required_javac_version := "1.7/1.8"
-java_version := $(shell echo '$(java_version_str)' | grep '^java .*[ "]1\.[78][\. "$$]')
+java_version := $(shell echo '$(java_version_str)' | grep -E '^(java|openjdk) .*[ "]1\.[78][\. "$$]')
 javac_version := $(shell echo '$(javac_version_str)' | grep '[ "]1\.[78][\. "$$]')
+endif # if EXPERIMENTAL_USE_JAVA8
 
 ifeq ($(strip $(java_version)),)
 $(info ************************************************************)
@@ -192,6 +200,38 @@ $(info Please follow the machine setup instructions at)
 $(info $(space)$(space)$(space)$(space)https://source.android.com/source/initializing.html)
 $(info ************************************************************)
 endif
+
+# Check for the current JDK.
+#
+# For Java 1.7, we require OpenJDK on linux and Oracle JDK on Mac OS.
+requires_openjdk := false
+ifeq ($(HOST_OS), linux)
+ifeq ($(USE_ORACLE_JAVA),)
+requires_openjdk := true
+endif
+endif
+
+# Check for the current jdk
+ifeq ($(requires_openjdk), true)
+# The user asked for java7 openjdk, so check that the host
+# java version is really openjdk
+ifeq ($(shell echo '$(java_version_str)' | grep -i openjdk),)
+$(info ************************************************************)
+$(info You asked for an OpenJDK 7 build but your version is)
+$(info $(java_version_str).)
+$(info ************************************************************)
+endif # java version is not OpenJdk
+else # if requires_openjdk
+ifneq ($(shell echo '$(java_version_str)' | grep -i openjdk),)
+$(info ************************************************************)
+$(info You are attempting to build with an unsupported JDK.)
+$(info $(space))
+$(info You use OpenJDK but only Sun/Oracle JDK is supported.)
+$(info Please follow the machine setup instructions at)
+$(info $(space)$(space)$(space)$(space)https://source.android.com/source/download.html)
+$(info ************************************************************)
+endif # java version is not Sun Oracle JDK
+endif # if requires_openjdk
 
 # Check for the correct version of javac
 ifeq ($(strip $(javac_version)),)
@@ -283,7 +323,7 @@ endif
 
 # Add build properties for ART. These define system properties used by installd
 # to pass flags to dex2oat.
-ADDITIONAL_BUILD_PROPERTIES += persist.sys.dalvik.vm.lib.2=libart
+ADDITIONAL_BUILD_PROPERTIES += persist.sys.dalvik.vm.lib.2=libart.so
 ADDITIONAL_BUILD_PROPERTIES += dalvik.vm.isa.$(TARGET_ARCH).variant=$(DEX2OAT_TARGET_CPU_VARIANT)
 ifneq ($(DEX2OAT_TARGET_INSTRUCTION_SET_FEATURES),)
   ADDITIONAL_BUILD_PROPERTIES += dalvik.vm.isa.$(TARGET_ARCH).features=$(DEX2OAT_TARGET_INSTRUCTION_SET_FEATURES)
@@ -423,48 +463,6 @@ ifeq ($(filter-out $(INTERNAL_MODIFIER_TARGETS),$(MAKECMDGOALS)),)
 $(INTERNAL_MODIFIER_TARGETS): $(DEFAULT_GOAL)
 endif
 
-# These targets are going to delete stuff, don't bother including
-# the whole directory tree if that's all we're going to do
-ifeq ($(MAKECMDGOALS),clean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),clobber)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),novo)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),magic)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),dirty)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),appclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),imgclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),kernelclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),systemclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),recoveryclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),rootclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),dataclean)
-dont_bother := true
-endif
-ifeq ($(MAKECMDGOALS),installclean)
-dont_bother := true
-endif
-
 # Bring in all modules that need to be built.
 ifeq ($(HOST_OS),windows)
 SDK_ONLY := true
@@ -499,7 +497,12 @@ endif
 ifneq ($(ONE_SHOT_MAKEFILE),)
 # We've probably been invoked by the "mm" shell function
 # with a subdirectory's makefile.
+
+# No Makefiles to include if we are performing a mms/short-circuit build. Only
+# the targets mentioned by main.mk and tasks/* are built (kernel, boot.img etc)
+ifneq ($(ONE_SHOT_MAKEFILE),__none__)
 include $(ONE_SHOT_MAKEFILE)
+endif
 # Change CUSTOM_MODULES to include only modules that were
 # defined by this makefile; this will install all of those
 # modules as a side-effect.  Do this after including ONE_SHOT_MAKEFILE
@@ -1031,13 +1034,6 @@ target-java-tests : java-target-tests
 target-native-tests : native-target-tests
 tests : host-tests target-tests
 
-# To catch more build breakage, check build tests modules in eng and userdebug builds.
-ifneq ($(TARGET_BUILD_PDK),true)
-ifneq ($(filter eng userdebug,$(TARGET_BUILD_VARIANT)),)
-droidcore : target-tests host-tests
-endif
-endif
-
 .PHONY: lintall
 
 ifneq (,$(filter samplecode, $(MAKECMDGOALS)))
@@ -1066,27 +1062,6 @@ clean:
 
 .PHONY: clobber
 clobber: clean
-
-# This should be almost as good as a clobber but keeping many of the time intensive files - DHO
-.PHONY: novo
-novo:
-	@rm -rf $(OUT_DIR)/target/*
-	@echo -e ${CL_GRN}"Target directory removed."${CL_RST}
-	
-# This is one step better then novo, only clearing target/product
-.PHONY: magic
-magic:
-	@rm -rf $(OUT_DIR)/target/product/*
-	@echo -e ${CL_GRN}"Target/Product directory removed."${CL_RST}	
-
-# Clears out zip and build.prop
-.PHONY: dirty
-dirty:
-	@rm -rf $(OUT_DIR)/target/product/*/system/build.prop
-	@rm -rf $(OUT_DIR)/target/product/*/*.zip
-	@rm -rf $(OUT_DIR)/target/product/*/*.md5sum
-	@rm -rf $(OUT_DIR)/target/product/*/*.txt
-	@echo -e ${CL_GRN}"build.prop, changelog and zip files erased"${CL_RST}	
 
 # Clears out all apks
 .PHONY: appclean
